@@ -24,19 +24,17 @@ def main():
     video_id = extract_video_id(youtube_url)
     print(f"Video ID: {video_id}")
 
-    # Varsayılan değerler (AI veya altyazı takılırsa sistem çökmesin diye)
     start_sec = 10
     caption = "Yapay zeka iş dünyasını ve meslekleri kökten değiştiriyor! Gelecekte seni ne bekliyor?"
     hashtags = "#YapayÇağ #YapayZeka #Gelecek #Teknoloji #Kariyer"
 
-    # Gemini AI ile akıllı analiz denemesi
     try:
         genai.configure(api_key=gemini_api_key)
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        model = genai.GenerativeModel('gemini-2.0-flash')
         
         prompt = f"""
         Bu YouTube videosu için:
-        1. İzleyicinin dikkatini çekecek en vurucu 30 saniyelik kısmın başlangıç saniyesini (Sadece sayı, örn: 45) bul.
+        1. İzleyicinin dikkatini çekecek en vurucu 30 saniyelik kısmın başlangıç saniyesini (Sadece sayı, örn: 10) bul.
         2. Instagram Reels için dikkat çekici bir açıklama yaz.
         3. Uygun hashtag'ler belirle.
         
@@ -62,7 +60,7 @@ def main():
         caption = data.get("caption", caption)
         hashtags = data.get("hashtags", hashtags)
     except Exception as e:
-        print(f"AI/Transcript notice (using smart defaults): {e}")
+        print(f"AI notice (using smart defaults): {e}")
 
     print(f"Start Second: {start_sec}")
     print(f"Caption: {caption}")
@@ -70,10 +68,13 @@ def main():
     temp_input = "temp_download.mp4"
     output_file = "final_reel.mp4"
 
-    print("Downloading video via yt-dlp...")
+    print("Downloading video via yt-dlp with android bypass...")
     subprocess.run([
-        "yt-dlp", "-f", "bestvideo[height<=1080]+bestaudio/best[height<=1080]",
-        "--merge-output-format", "mp4", "-o", temp_input, youtube_url
+        "yt-dlp",
+        "--extractor-args", "youtube:player_client=android",
+        "-f", "b",
+        "-o", temp_input,
+        youtube_url
     ], check=True)
 
     print(f"Cutting video from {start_sec}s for 30 seconds and formatting to 9:16...")
