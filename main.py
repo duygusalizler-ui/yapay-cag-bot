@@ -1,224 +1,295 @@
+#!/usr/bin/env python3
+"""
+Yapay Çağ - Otomatik Viral Medya Sistemi (v2)
+------------------------------------------------------------
+Akış:
+  1) Kaynak seçer (SOURCE_URL varsa onu; yoksa sources.txt kuyruğundan
+     işlenmemiş İLK videoyu).
+  2) Ssemble ile klip üretimini başlatır, bitene kadar durumu yoklar.
+  3) get_shorts ile klipleri + viral skorları alır.
+  4) Eşiği (80+) geçen en iyi N klibi seçer.
+  5) Daha önce gönderilmemiş olanları indirir, MP4/WebM bütünlüğünü doğrular,
+     caption'a Shopier CTA ekleyip Telegram kanalına gönderir.
+  6) State'i (gönderilen klipler + işlenen kaynaklar) kaydeder, özet rapor atar.
+
+NOT: Ssemble API'si resmî olarak MCP sunucusu olarak da sunulur (anahtar
+formatı sk_ssemble_...). Aşağıdaki REST yolları belgelenmiş araç şemasına
+(create_short / get_status / get_shorts) göredir; kesin adresi panelden
+doğrula, farklıysa SSEMBLE_BASE_URL'i güncelle. Mantık aynı kalır.
+"""
+
 import os
 import sys
+import json
 import time
+import tempfile
+import logging
 import requests
 
-def run_bot():
-    youtube_url = sys.argv[1] if len(sys.argv) > 1 else os.getenv("YOUTUBE_URL")
-    ssemble_api_key = os.getenv("SSEMBLE_API_KEY")
-    template_id = os.getenv("SSEMBLE_TEMPLATE_ID")
-    telegram_token = os.getenv("TELEGRAM_TOKEN")
-    telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")
+# --- Yapılandırma -----------------------------------------------------------
+SSEMBLE_BASE_URL = os.getenv("SSEMBLE_BASE_URL", "https://api.ssemble.com/v1")
+SSEMBLE_API_KEY = os.environ.get("SSEMBLE_API_KEY", "")
+SSEMBLE_TEMPLATE_ID = os.getenv("SSEMBLE_TEMPLATE_ID", "")
 
-    if not youtube_url:
-        print("Hata: YouTube URL bulunamadı!")
-        return False
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
-    if not ssemble_api_key:
-        print("Hata: SSEMBLE_API_KEY GitHub Secrets'ta tanımlı değil!")
-        return False
+SOURCE_URL = os.getenv("SOURCE_URL", "")            # tekil override / manuel test
+SOURCES_FILE = os.getenv("SOURCES_FILE", "sources.txt")
+STATE_FILE = os.getenv("STATE_FILE", "sent_state.json")
+SHOPIER_CTA = os.getenv("SHOPIER_CTA", "")          # ör: "🛒 https://shopier.com/..."
 
-    print(f"🚀 Ssemble API viral tarama başlatılıyor. Hedef URL: {youtube_url}")
+VIRAL_MIN_SCORE = float(os.getenv("VIRAL_MIN_SCORE", "80"))
+VIRAL_TOP_N = int(os.getenv("VIRAL_TOP_N", "3"))
+POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "20"))
+POLL_TIMEOUT = int(os.getenv("POLL_TIMEOUT", "1800"))
 
-    create_url = "https://aiclipping.ssemble.com/api/v1/shorts/create"
-    headers = {
-        "X-API-Key": ssemble_api_key,
-        "Content-Type": "application/json"
-    }
-    
-    payload = {
-        "url": youtube_url,
-        "start": 0,
-        "end": 1200,
-        "preferredLength": "under60sec",
-        "language": "tr"
-    }
-    
-    if template_id and template_id.strip():
-        payload["templateId"] = template_id.strip()
+TG_MAX_UPLOAD = 50 * 1024 * 1024  # Telegram bot yükleme limiti (~50 MB)
 
-    response = None
-    for attempt in range(1, 4):
-        try:
-            print(f"🔄 Ssemble API'ye bağlanılıyor (Deneme {attempt}/3)...")
-            response = requests.post(create_url, json=payload, headers=headers, timeout=45)
-            if response.status_code in [200, 201]:
-                break
-            else:
-                print(f"Uyarı: API kodu {response.status_code}, yanıt: {response.text}")
-        except Exception as e:
-            print(f"Bağlantı hatası: {e}")
-        time.sleep(5)
+logging.basicConfig(level=logging.INFO,
+                    format="%(asctime)s | %(levelname)s | %(message)s")
+log = logging.getLogger("yapay-cag")
 
-    if not response or response.status_code not in [200, 201]:
-        print("❌ Ssemble API yanıt vermedi, bu tur atlanıyor.")
-        return False
 
-    res_data = response.json()
-    data_field = res_data.get("data", {}) if isinstance(res_data.get("data"), dict) else {}
-    request_id = (
-        res_data.get("requestId") or 
-        res_data.get("request_id") or 
-        res_data.get("id") or 
-        data_field.get("requestId") or 
-        data_field.get("request_id") or 
-        data_field.get("id")
-    )
-    
-    if not request_id:
-        print(f"Hata: Request ID dönmedi! Gelen Yanıt: {res_data}")
-        return False
-
-    print(f"✅ İşlem sıraya alındı. Request ID: {request_id}. Yapay zeka işliyor...")
-
-    status_url = f"https://aiclipping.ssemble.com/api/v1/shorts/{request_id}/status"
-    completed = False
-    
-    for attempt in range(1, 81):
-        time.sleep(15)
-        try:
-            status_res = requests.get(status_url, headers={"X-API-Key": ssemble_api_key}, timeout=20)
-            if status_res.status_code == 200:
-                status_data = status_res.json()
-                status_content = status_data.get("data", {}) if isinstance(status_data.get("data"), dict) else {}
-                status = status_data.get("status") or status_content.get("status")
-                print(f"[{attempt}/80] İşlem durumu: {status}")
-                
-                if status == "completed":
-                    completed = True
-                    break
-                elif status == "failed":
-                    print("❌ Ssemble tarafında işlem başarısız oldu!")
-                    return False
-        except Exception as e:
-            print(f"Durum sorgulama hatası: {e}")
-
-    if not completed:
-        print("❌ Zaman aşımı: İşlem tamamlanamadı.")
-        return False
-
-    print("🎯 İşlem tamamlandı, klipler alınıyor...")
-    result_url = f"https://aiclipping.ssemble.com/api/v1/shorts/{request_id}"
-    
+# --- State (kalıcılık) ------------------------------------------------------
+def load_state():
     try:
-        result_res = requests.get(result_url, headers={"X-API-Key": ssemble_api_key}, timeout=30)
-        if result_res.status_code != 200:
-            print(f"Sonuç alınamadı kod: {result_res.status_code}")
-            return False
-        result_data = result_res.json()
-    except Exception as e:
-        print(f"Sonuçlar alınırken hata: {e}")
-        return False
+        with open(STATE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        data = {}
+    data.setdefault("sent_clips", [])
+    data.setdefault("processed_sources", [])
+    return data
 
-    res_clips_container = result_data.get("clips") or result_data.get("data", {}).get("clips") or result_data.get("data")
-    if isinstance(res_clips_container, dict):
-        clips = res_clips_container.get("clips", [res_clips_container])
-    elif isinstance(res_clips_container, list):
-        clips = res_clips_container
-    else:
-        clips = [result_data]
 
-    if not clips:
-        print(f"Hata: Klip listesi boş. Gelen veri: {result_data}")
-        return False
+def save_state(state):
+    with open(STATE_FILE, "w", encoding="utf-8") as f:
+        json.dump(state, f, ensure_ascii=False, indent=2)
 
-    sorted_clips = sorted(clips, key=lambda c: float(c.get("viral_score") or c.get("viralityScore") or c.get("score") or c.get("viralScore") or 0), reverse=True)
 
-    success_sent = False
-    for index, clip in enumerate(sorted_clips[:5], start=1):
-        print(f"🔍 Klip {index} İçeriği: {clip}")
-        
-        # 1. Bilinen tüm standart alanları dene
-        video_download_url = (
-            clip.get("video_url") or 
-            clip.get("videoUrl") or 
-            clip.get("url") or 
-            clip.get("downloadUrl") or 
-            clip.get("download_url") or 
-            clip.get("fileUrl") or 
-            clip.get("file_url")
-        )
-        
-        # 2. Eğer bulunamadıysa, klip objesindeki TÜM alanları tarayıp YouTube olmayan HTTP linkini bul
-        if not video_download_url:
-            for k, v in clip.items():
-                if isinstance(v, str) and v.startswith("http") and not any(yt in v for yt in ["youtube.com", "youtu.be"]):
-                    video_download_url = v
-                    print(f"💡 Akıllı tarayıcı URL'yi yakaladı (Anahtar: '{k}'): {v}")
-                    break
+def read_sources():
+    """SOURCE_URL varsa onu döndür; yoksa sources.txt satırlarını oku."""
+    if SOURCE_URL.strip():
+        return [SOURCE_URL.strip()]
+    try:
+        with open(SOURCES_FILE, "r", encoding="utf-8") as f:
+            lines = [ln.strip() for ln in f]
+    except FileNotFoundError:
+        return []
+    return [ln for ln in lines if ln and not ln.startswith("#")]
 
-        title = clip.get("title") or "Yapay Zeka Trendleri"
-        description = clip.get("description") or "Yapay zeka dünyasından öne çıkan çarpıcı anlar."
-        hashtags = clip.get("hashtags") or "#YapayZeka #Teknoloji #Gelecek #Reels"
-        score = clip.get("viral_score") or clip.get("viralityScore") or clip.get("score") or clip.get("viralScore") or "80+"
 
-        if not video_download_url or "youtube.com" in video_download_url or "youtu.be" in video_download_url:
-            print(f"⚠️ {index}. klip için geçerli URL bulunamadı, atlanıyor.")
-            continue
+def pick_target(sources, state):
+    """SOURCE_URL override ise onu işle; değilse kuyruktan işlenmemiş ilkini seç."""
+    if SOURCE_URL.strip():
+        return SOURCE_URL.strip()
+    for s in sources:
+        if s not in state["processed_sources"]:
+            return s
+    return None
 
-        print(f"📥 {index}. klip indiriliyor... URL: {video_download_url}")
-        output_filename = f"final_reel_{index}.mp4"
-        
+
+# --- Ssemble istemcisi ------------------------------------------------------
+class SsembleClient:
+    def __init__(self, api_key, base_url=SSEMBLE_BASE_URL):
+        if not api_key:
+            raise RuntimeError("SSEMBLE_API_KEY tanımlı değil.")
+        self.base_url = base_url.rstrip("/")
+        self.session = requests.Session()
+        self.session.headers.update({
+            "Authorization": f"Bearer {api_key}",
+            "SSEMBLE_API_KEY": api_key,
+            "Content-Type": "application/json",
+        })
+
+    def create_short(self, source_url, template_id=None):
+        payload = {"youtubeUrl": source_url}
+        if template_id:
+            payload["templateId"] = template_id
+        r = self.session.post(f"{self.base_url}/shorts", json=payload, timeout=60)
+        r.raise_for_status()
+        data = r.json()
+        request_id = data.get("requestId") or data.get("id")
+        if not request_id:
+            raise RuntimeError(f"requestId alınamadı: {data}")
+        log.info("Üretim başlatıldı. requestId=%s", request_id)
+        return request_id
+
+    def get_status(self, request_id):
+        r = self.session.get(f"{self.base_url}/shorts/{request_id}/status", timeout=30)
+        r.raise_for_status()
+        return r.json().get("status", "unknown")
+
+    def get_shorts(self, request_id):
+        r = self.session.get(f"{self.base_url}/shorts/{request_id}", timeout=30)
+        r.raise_for_status()
+        data = r.json()
+        return data.get("shorts") or data.get("clips") or []
+
+    def wait_until_ready(self, request_id):
+        waited = 0
+        while waited < POLL_TIMEOUT:
+            status = self.get_status(request_id)
+            log.info("Durum: %s (%ss)", status, waited)
+            if status == "completed":
+                return True
+            if status == "failed":
+                raise RuntimeError("Ssemble işlemi başarısız oldu.")
+            time.sleep(POLL_INTERVAL)
+            waited += POLL_INTERVAL
+        raise TimeoutError("Zaman aşımı: klipler zamanında hazır olmadı.")
+
+
+# --- Yardımcılar ------------------------------------------------------------
+def clip_id(c):
+    return str(c.get("id") or c.get("clipId") or c.get("url") or c.get("videoUrl") or "")
+
+
+def select_top_clips(clips, min_score, top_n):
+    scored = []
+    for c in clips:
+        raw = c.get("viralScore", c.get("score", 0)) or 0
         try:
-            vid_res = requests.get(video_download_url, stream=True, timeout=120)
-            with open(output_filename, "wb") as f:
-                for chunk in vid_res.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
+            score = float(raw)
+        except (TypeError, ValueError):
+            score = 0.0
+        c["_score"] = score
+        if score >= min_score:
+            scored.append(c)
+    scored.sort(key=lambda x: x["_score"], reverse=True)
+    return scored[:top_n]
 
-            # Dosya kontrolü
-            with open(output_filename, "rb") as f:
-                header = f.read(200)
-                file_size = os.path.getsize(output_filename)
-                
-                if b'<!DOCTYPE' in header or b'<html' in header or file_size < 10000:
-                    print(f"❌ HATA: İndirilen dosya video değil (HTML/Hata).")
-                    if os.path.exists(output_filename):
-                        os.remove(output_filename)
-                    continue
 
-            # Telegram'a Gönder
-            if telegram_token and telegram_chat_id:
-                print(f"📤 {index}. klip Telegram'a gönderiliyor...")
-                tg_url = f"https://api.telegram.org/bot{telegram_token}/sendVideo"
-                full_message = (
-                    f"🚀 **Yapay Çağ - Elit Stok**\n\n"
-                    f"🔥 **Viral Skor:** {score}/100\n"
-                    f"📌 **Başlık:** {title}\n\n"
-                    f"📝 {description}\n\n"
-                    f"🏷 {hashtags}"
-                )
-                
-                with open(output_filename, 'rb') as video_file:
-                    tg_res = requests.post(tg_url, data={'chat_id': telegram_chat_id, 'caption': full_message, 'parse_mode': 'Markdown'}, files={'video': video_file}, timeout=120)
-                    if tg_res.status_code == 200:
-                        print("✨ Klip başarıyla iletildi!")
-                        success_sent = True
-                    else:
-                        print(f"Telegram hata: {tg_res.text}")
+def download_and_verify(url):
+    r = requests.get(url, stream=True, timeout=120)
+    r.raise_for_status()
+    suffix = ".webm" if "webm" in r.headers.get("Content-Type", "").lower() else ".mp4"
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+    size = 0
+    for chunk in r.iter_content(chunk_size=1 << 16):
+        if chunk:
+            tmp.write(chunk)
+            size += len(chunk)
+    tmp.close()
+    if size == 0:
+        os.unlink(tmp.name)
+        raise ValueError("İndirilen dosya boş.")
+    with open(tmp.name, "rb") as f:
+        head = f.read(16)
+    if not (b"ftyp" in head or head.startswith(b"\x1a\x45\xdf\xa3")):
+        os.unlink(tmp.name)
+        raise ValueError("Dosya bütünlüğü doğrulanamadı (MP4/WebM değil).")
+    log.info("Doğrulandı: %s (%.1f MB)", tmp.name, size / 1e6)
+    return tmp.name, size
 
-            if os.path.exists(output_filename):
-                os.remove(output_filename)
-            
-            if success_sent:
-                break
 
+# --- Telegram ---------------------------------------------------------------
+def _tg(method):
+    return f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/{method}"
+
+
+def tg_send_message(text):
+    r = requests.post(_tg("sendMessage"),
+                      data={"chat_id": TELEGRAM_CHAT_ID, "text": text,
+                            "parse_mode": "HTML"}, timeout=30)
+    r.raise_for_status()
+
+
+def tg_send_video(path, caption):
+    caption = (caption or "")[:1024]
+    with open(path, "rb") as f:
+        r = requests.post(_tg("sendVideo"),
+                          data={"chat_id": TELEGRAM_CHAT_ID, "caption": caption,
+                                "parse_mode": "HTML"},
+                          files={"video": f}, timeout=300)
+    r.raise_for_status()
+
+
+def build_caption(title, desc, score):
+    cta = f"\n\n{SHOPIER_CTA}" if SHOPIER_CTA.strip() else ""
+    return f"🔥 <b>{title}</b>\nViral skor: {score:.0f}\n\n{desc}{cta}"
+
+
+# --- Ana akış ---------------------------------------------------------------
+def main():
+    for name, val in [("SSEMBLE_API_KEY", SSEMBLE_API_KEY),
+                      ("TELEGRAM_TOKEN", TELEGRAM_TOKEN),
+                      ("TELEGRAM_CHAT_ID", TELEGRAM_CHAT_ID)]:
+        if not val:
+            log.error("Eksik ortam değişkeni: %s", name)
+            sys.exit(1)
+
+    state = load_state()
+    sources = read_sources()
+    target = pick_target(sources, state)
+
+    if not target:
+        msg = "ℹ️ İşlenecek yeni kaynak yok (kuyruk boş)." if sources \
+              else "⚠️ Kaynak bulunamadı: SOURCE_URL veya sources.txt tanımla."
+        tg_send_message(msg)
+        log.warning(msg)
+        return
+
+    log.info("Hedef kaynak: %s", target)
+    client = SsembleClient(SSEMBLE_API_KEY)
+    request_id = client.create_short(target, SSEMBLE_TEMPLATE_ID or None)
+    client.wait_until_ready(request_id)
+
+    clips = client.get_shorts(request_id)
+    log.info("%d klip bulundu.", len(clips))
+    top = select_top_clips(clips, VIRAL_MIN_SCORE, VIRAL_TOP_N)
+
+    sent = 0
+    sent_set = set(state["sent_clips"])
+    for c in top:
+        cid = clip_id(c)
+        if cid and cid in sent_set:
+            log.info("Zaten gönderilmiş, atlanıyor: %s", cid)
+            continue
+        url = c.get("url") or c.get("videoUrl")
+        if not url:
+            continue
+        title = c.get("title", "Başlıksız")
+        desc = c.get("description", "")
+        try:
+            path, size = download_and_verify(url)
         except Exception as e:
-            print(f"İndirme istisnası: {e}")
-            if os.path.exists(output_filename):
-                os.remove(output_filename)
+            log.error("Klip atlandı (%s): %s", title, e)
+            continue
+        caption = build_caption(title, desc, c["_score"])
+        try:
+            if size > TG_MAX_UPLOAD:
+                tg_send_message(f"{caption}\n\n▶️ {url}")
+            else:
+                tg_send_video(path, caption)
+            sent += 1
+            if cid:
+                sent_set.add(cid)
+            # her başarılı gönderimden sonra state'i yaz (kalıcılık)
+            state["sent_clips"] = sorted(sent_set)
+            save_state(state)
+        finally:
+            if os.path.exists(path):
+                os.unlink(path)
 
-    return success_sent
+    # kaynağı işlenmiş olarak işaretle (sadece kuyruk modunda)
+    if not SOURCE_URL.strip() and target not in state["processed_sources"]:
+        state["processed_sources"].append(target)
+    save_state(state)
+
+    tg_send_message(f"✅ Otomasyon tamam. Kaynak işlendi, {sent} klip gönderildi.\n"
+                    f"(requestId: {request_id})")
+    log.info("Bitti. Gönderilen: %d", sent)
+
 
 if __name__ == "__main__":
-    for global_attempt in range(1, 4):
-        print(f"\n🔄 Otomasyon Döngüsü Başlatılıyor (Global Deneme {global_attempt}/3)...")
-        if run_bot():
-            print("✨ İşlem kusursuz tamamlandı!")
-            sys.exit(0)
-        else:
-            print(f"⚠️ Tekrar deneniyor...")
-            time.sleep(10)
-    
-    print("❌ Sonuç alınamadı.")
-    sys.exit(1)
+    try:
+        main()
+    except Exception as e:
+        log.exception("Kritik hata: %s", e)
+        try:
+            tg_send_message(f"❌ Otomasyon hatası: {e}")
+        except Exception:
+            pass
+        sys.exit(1)
