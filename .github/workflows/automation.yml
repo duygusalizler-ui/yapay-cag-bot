@@ -1,10 +1,23 @@
 name: Yapay Cag Otomasyon
 
+# AYNI ANDA İKİ KOŞU ASLA ÇALIŞMASIN (çift tetikleme + push çakışması önlemi)
+concurrency:
+  group: yapay-cag-bot-tekillik
+  cancel-in-progress: false
+
 on:
+  # Gece tetiklemelerini (02-04-06) dış cron siten yapıyor.
+  # GitHub'ın kendi cron'ları 15 Eylül'de çift tetikleme yarışı ve
+  # push çakışması ürettiği için DEVRE DIŞI bırakıldı.
+  # İstersen yarın şu satırları açarak geri ekleyebilirsin:
+  # schedule:
+  #   - cron: "12 8 * * *"
+  #   - cron: "14 14 * * *"
+  #   - cron: "16 18 * * *"
   workflow_dispatch: {}
 
 permissions:
-  contents: write            # sent_state.json'ı repoya geri yazabilmek için
+  contents: write    # sent_state.json'ı repoya geri yazabilmek için
 
 jobs:
   run:
@@ -30,8 +43,8 @@ jobs:
           TELEGRAM_CHAT_ID:    ${{ secrets.TELEGRAM_CHAT_ID }}
           SOURCE_URL:          ${{ secrets.SOURCE_URL }}
           SHOPIER_CTA:         ${{ secrets.SHOPIER_CTA }}
-          VIRAL_MIN_SCORE:     ${{ secrets.VIRAL_MIN_SCORE }}   # 👈 ARTIK SECRET'TAN OKUNUYOR
-          CLIP_END_SEC:        ${{ secrets.CLIP_END_SEC }}      # 👈 ARTIK SECRET'TAN OKUNUYOR
+          VIRAL_MIN_SCORE:     "80"
+          CLIP_END_SEC:        "600"
           VIRAL_TOP_N:         "3"
 
       - name: Durum dosyasını repoya kaydet
@@ -44,5 +57,6 @@ jobs:
             echo "Değişiklik yok, commit atlanıyor."
           else
             git commit -m "state: gönderilen klipler güncellendi [skip ci]"
+            git pull --rebase --autostash || true
             git push
           fi
