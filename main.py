@@ -26,11 +26,11 @@ def main():
         "Content-Type": "application/json"
     }
     
-    # Tüm videodaki en can alıcı yerleri taramak için geniş pencere (1 saat = 3600 sn)
+    # Ssemble API sınırı gereği maksimum 20 dakika (1200 saniye) pencere
     payload = {
         "url": youtube_url,
         "start": 0,
-        "end": 3600,
+        "end": 1200,
         "preferredLength": "under60sec",
         "language": "tr"
     }
@@ -108,7 +108,6 @@ def main():
         print(f"Hata: Üretilen klip bilgisine ulaşılamadı. Gelen veri: {result_data}")
         sys.exit(1)
 
-    # En yüksek viral skora (viralScore / score) sahip klibi otomatik bulup seçme
     best_clip = max(clips, key=lambda c: c.get("viralScore") or c.get("score") or 0)
 
     video_download_url = best_clip.get("videoUrl") or best_clip.get("url") or best_clip.get("downloadUrl")
