@@ -1,0 +1,7 @@
+# Yapay Çağ - Kaynak kuyruğu
+# Her satıra bir YouTube linki yaz. # ile başlayan satırlar yok sayılır.
+# Sistem her çalıştırmada BURADAN işlenmemiş İLK linki alır ve işler.
+# Örnekler (kendi/haklı olduğun içeriklerle değiştir):
+
+# https://www.youtube.com/watch?v=ORNEK1
+# https://www.youtube.com/watch?v=ORNEK2
