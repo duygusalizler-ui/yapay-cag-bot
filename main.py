@@ -26,7 +26,6 @@ def main():
         "Content-Type": "application/json"
     }
     
-    # Ssemble API sınırı gereği maksimum 20 dakika (1200 saniye) pencere
     payload = {
         "url": youtube_url,
         "start": 0,
@@ -49,13 +48,23 @@ def main():
         sys.exit(1)
 
     res_data = response.json()
-    request_id = res_data.get("requestId") or res_data.get("request_id") or res_data.get("id")
+    
+    # Gelen yanıtın 'data' içinde olup olmadığını kontrol eden güvenli yapı
+    data_field = res_data.get("data", {}) if isinstance(res_data.get("data"), dict) else {}
+    request_id = (
+        res_data.get("requestId") or 
+        res_data.get("request_id") or 
+        res_data.get("id") or 
+        data_field.get("requestId") or 
+        data_field.get("request_id") or 
+        data_field.get("id")
+    )
     
     if not request_id:
         print(f"Hata: Ssemble'dan geçerli bir Request ID dönmedi! Gelen Yanıt: {res_data}")
         sys.exit(1)
 
-    print(f"✅ İşlem sıraya alındı. Request ID: {request_id}. Yapay zeka en viral anları arıyor...")
+    print(f"✅ İşlem sıraya alındı. Request ID: {request_id}. Yapay zeka en viral anları işliyor...")
 
     status_url = f"https://aiclipping.ssemble.com/api/v1/shorts/{request_id}/status"
     max_retries = 40
@@ -67,7 +76,8 @@ def main():
             status_res = requests.get(status_url, headers={"X-API-Key": ssemble_api_key}, timeout=20)
             if status_res.status_code == 200:
                 status_data = status_res.json()
-                status = status_data.get("status") or status_data.get("data", {}).get("status")
+                status_content = status_data.get("data", {}) if isinstance(status_data.get("data"), dict) else {}
+                status = status_data.get("status") or status_content.get("status")
                 print(f"[{attempt}/{max_retries}] Bulut işlem durumu: {status}")
                 
                 if status == "completed":
@@ -99,16 +109,20 @@ def main():
         sys.exit(1)
 
     result_data = result_res.json()
-    clips = result_data.get("clips") or result_data.get("data", {}).get("clips")
+    res_clips_container = result_data.get("clips") or result_data.get("data", {}).get("clips") or result_data.get("data")
     
-    if not clips and isinstance(result_data, dict):
+    if isinstance(res_clips_container, dict):
+        clips = res_clips_container.get("clips", [res_clips_container])
+    elif isinstance(res_clips_container, list):
+        clips = res_clips_container
+    else:
         clips = [result_data]
 
     if not clips:
         print(f"Hata: Üretilen klip bilgisine ulaşılamadı. Gelen veri: {result_data}")
         sys.exit(1)
 
-    best_clip = max(clips, key=lambda c: c.get("viralScore") or c.get("score") or 0)
+    best_clip = max(clips, key=lambda c: c.get("viralScore") or c.get("score") or 0) if len(clips) > 0 else clips[0]
 
     video_download_url = best_clip.get("videoUrl") or best_clip.get("url") or best_clip.get("downloadUrl")
     title = best_clip.get("title") or "Yapay Zeka ve Gelecek Trendleri"
