@@ -1,0 +1,51 @@
+name: Yapay Cag Otomasyon
+
+on:
+  schedule:
+    - cron: "12 8 * * *"
+    - cron: "14 14 * * *"
+    - cron: "16 18 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write            # sent_state.json'ı repoya geri yazabilmek için
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Bağımlılıklar
+        run: pip install -r requirements.txt
+
+      - name: Otomasyonu çalıştır
+        run: python main.py
+        env:
+          SSEMBLE_API_KEY:     ${{ secrets.SSEMBLE_API_KEY }}
+          SSEMBLE_TEMPLATE_ID: ${{ secrets.SSEMBLE_TEMPLATE_ID }}
+          SSEMBLE_BASE_URL:    ${{ secrets.SSEMBLE_BASE_URL }}
+          TELEGRAM_TOKEN:      ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID:    ${{ secrets.TELEGRAM_CHAT_ID }}
+          SOURCE_URL:          ${{ secrets.SOURCE_URL }}
+          SHOPIER_CTA:         ${{ secrets.SHOPIER_CTA }}
+          VIRAL_MIN_SCORE:     "80"
+          VIRAL_TOP_N:         "3"
+
+      - name: Durum dosyasını repoya kaydet
+        if: always()
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add sent_state.json 2>/dev/null || true
+          if git diff --staged --quiet; then
+            echo "Değişiklik yok, commit atlanıyor."
+          else
+            git commit -m "state: gönderilen klipler güncellendi [skip ci]"
+            git push
+          fi
