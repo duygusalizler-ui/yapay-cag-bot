@@ -3,5 +3,5 @@
 # Sistem her çalıştırmada BURADAN işlenmemiş İLK linki alır ve işler.
 # Örnekler (kendi/haklı olduğun içeriklerle değiştir):
 
-# https://www.youtube.com/watch?v=ORNEK1
+https://youtu.be/7ARBJQn6QkM?si=fMmyhCgHeEek0vO-
 # https://www.youtube.com/watch?v=ORNEK2
