@@ -84,7 +84,7 @@ def normalize_youtube(url):
             vid = p.path.lstrip("/").split("/")[0]
             return f"https://www.youtube.com/watch?v={vid}" if vid else url
         if "youtube.com" in p.netloc:
-            v = parse_qs(p.query).get("v", [None])[0)
+            v = parse_qs(p.query).get("v", [None])[0]
             return f"https://www.youtube.com/watch?v={v}" if v else url
     except Exception:
         pass
