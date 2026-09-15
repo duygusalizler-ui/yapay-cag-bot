@@ -1,10 +1,6 @@
 name: Yapay Cag Otomasyon
 
 on:
-  schedule:
-    - cron: "12 8 * * *"
-    - cron: "14 14 * * *"
-    - cron: "16 18 * * *"
   workflow_dispatch: {}
 
 permissions:
