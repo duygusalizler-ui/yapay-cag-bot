@@ -37,19 +37,26 @@ def main():
     if template_id and template_id.strip():
         payload["templateId"] = template_id.strip()
 
-    try:
-        response = requests.post(create_url, json=payload, headers=headers, timeout=30)
-    except Exception as e:
-        print(f"Bağlantı Hatası (Ssemble Create): {e}")
-        sys.exit(1)
+    # Ssemble Create isteği için 3 kez otomatik tekrar deneme (Retry) mekanizması
+    response = None
+    max_api_retries = 3
+    for attempt in range(1, max_api_retries + 1):
+        try:
+            print(f"🔄 Ssemble API'ye bağlanılıyor (Deneme {attempt}/{max_api_retries})...")
+            response = requests.post(create_url, json=payload, headers=headers, timeout=45)
+            if response.status_code in [200, 201]:
+                break
+            else:
+                print(f"Uyarı: API kodu {response.status_code}, yanıt: {response.text}")
+        except Exception as e:
+            print(f"Bağlantı hatası: {e}")
+        time.sleep(5)
 
-    if response.status_code not in [200, 201]:
-        print(f"Ssemble API Reddetti! Kod: {response.status_code} - Yanıt: {response.text}")
+    if not response or response.status_code not in [200, 201]:
+        print(f"❌ Ssemble API 3 denemede de yanıt vermedi! İşlem durduruluyor.")
         sys.exit(1)
 
     res_data = response.json()
-    
-    # Gelen yanıtın 'data' içinde olup olmadığını kontrol eden güvenli yapı
     data_field = res_data.get("data", {}) if isinstance(res_data.get("data"), dict) else {}
     request_id = (
         res_data.get("requestId") or 
@@ -67,7 +74,7 @@ def main():
     print(f"✅ İşlem sıraya alındı. Request ID: {request_id}. Yapay zeka en viral anları işliyor...")
 
     status_url = f"https://aiclipping.ssemble.com/api/v1/shorts/{request_id}/status"
-    max_retries = 40
+    max_retries = 80  # 80 deneme * 15 saniye = 20 dakika boyunca güvenle bekler
     completed = False
     
     for attempt in range(1, max_retries + 1):
@@ -89,10 +96,10 @@ def main():
             else:
                 print(f"Uyarı: Durum kodu {status_res.status_code}, tekrar deneniyor...")
         except Exception as e:
-            print(f"Durum sorgulama sırasında hata oluştu: {e}")
+            print(f"Durum sorgulama sırasında geçici ağ hatası: {e}")
 
     if not completed:
-        print("❌ Zaman Aşımı: Ssemble 10 dakika içinde videoyu tamamlayamadı.")
+        print("❌ Zaman Aşımı: Ssemble 20 dakika içinde videoyu tamamlayamadı.")
         sys.exit(1)
 
     print("🎯 Video başarıyla tamamlandı, en yüksek viral skorlu klip seçiliyor...")
