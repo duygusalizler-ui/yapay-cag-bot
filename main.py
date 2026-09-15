@@ -122,20 +122,38 @@ def run_bot():
         print(f"Hata: Klip listesi boş. Gelen veri: {result_data}")
         return False
 
-    # Resmi Ssemble alanı olan 'viral_score' üzerinden büyükten küçüğe sıralama
-    sorted_clips = sorted(clips, key=lambda c: float(c.get("viral_score") or c.get("viralityScore") or c.get("score") or 0), reverse=True)
+    sorted_clips = sorted(clips, key=lambda c: float(c.get("viral_score") or c.get("viralityScore") or c.get("score") or c.get("viralScore") or 0), reverse=True)
 
     success_sent = False
     for index, clip in enumerate(sorted_clips[:5], start=1):
-        # RESMİ SSEMBLE API ALANI: video_url
-        video_download_url = clip.get("video_url") or clip.get("videoUrl") or clip.get("url")
+        print(f"🔍 Klip {index} İçeriği: {clip}")
+        
+        # 1. Bilinen tüm standart alanları dene
+        video_download_url = (
+            clip.get("video_url") or 
+            clip.get("videoUrl") or 
+            clip.get("url") or 
+            clip.get("downloadUrl") or 
+            clip.get("download_url") or 
+            clip.get("fileUrl") or 
+            clip.get("file_url")
+        )
+        
+        # 2. Eğer bulunamadıysa, klip objesindeki TÜM alanları tarayıp YouTube olmayan HTTP linkini bul
+        if not video_download_url:
+            for k, v in clip.items():
+                if isinstance(v, str) and v.startswith("http") and not any(yt in v for yt in ["youtube.com", "youtu.be"]):
+                    video_download_url = v
+                    print(f"💡 Akıllı tarayıcı URL'yi yakaladı (Anahtar: '{k}'): {v}")
+                    break
+
         title = clip.get("title") or "Yapay Zeka Trendleri"
         description = clip.get("description") or "Yapay zeka dünyasından öne çıkan çarpıcı anlar."
         hashtags = clip.get("hashtags") or "#YapayZeka #Teknoloji #Gelecek #Reels"
-        score = clip.get("viral_score") or clip.get("viralityScore") or clip.get("score") or "80+"
+        score = clip.get("viral_score") or clip.get("viralityScore") or clip.get("score") or clip.get("viralScore") or "80+"
 
         if not video_download_url or "youtube.com" in video_download_url or "youtu.be" in video_download_url:
-            print(f"⚠️ {index}. klip için geçerli render edilmiş video URL'si bulunamadı (Atlanıyor).")
+            print(f"⚠️ {index}. klip için geçerli URL bulunamadı, atlanıyor.")
             continue
 
         print(f"📥 {index}. klip indiriliyor... URL: {video_download_url}")
@@ -148,12 +166,13 @@ def run_bot():
                     if chunk:
                         f.write(chunk)
 
-            # Dosya bütünlük kontrolü (MP4 / WebM imzası)
+            # Dosya kontrolü
             with open(output_filename, "rb") as f:
                 header = f.read(200)
-                if b'ftyp' not in header and b'moov' not in header and b'mdat' not in header and b'webm' not in header:
-                    text_preview = header.decode('utf-8', errors='ignore')
-                    print(f"❌ HATA: İndirilen dosya geçerli bir video değil! İçerik: {text_preview}")
+                file_size = os.path.getsize(output_filename)
+                
+                if b'<!DOCTYPE' in header or b'<html' in header or file_size < 10000:
+                    print(f"❌ HATA: İndirilen dosya video değil (HTML/Hata).")
                     if os.path.exists(output_filename):
                         os.remove(output_filename)
                     continue
@@ -185,7 +204,7 @@ def run_bot():
                 break
 
         except Exception as e:
-            print(f"İndirme/gönderim istisnası: {e}")
+            print(f"İndirme istisnası: {e}")
             if os.path.exists(output_filename):
                 os.remove(output_filename)
 
@@ -198,8 +217,8 @@ if __name__ == "__main__":
             print("✨ İşlem kusursuz tamamlandı!")
             sys.exit(0)
         else:
-            print(f"⚠️ Bu turda aksaklık oldu, 10 saniye sonra tekrar deneniyor...")
+            print(f"⚠️ Tekrar deneniyor...")
             time.sleep(10)
     
-    print("❌ 3 global denemede de sonuç alınamadı.")
+    print("❌ Sonuç alınamadı.")
     sys.exit(1)
