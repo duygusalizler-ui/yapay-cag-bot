@@ -266,14 +266,12 @@ def main():
             sent += 1
             if cid:
                 sent_set.add(cid)
-            # her başarılı gönderimden sonra state'i yaz (kalıcılık)
             state["sent_clips"] = sorted(sent_set)
             save_state(state)
         finally:
             if os.path.exists(path):
                 os.unlink(path)
 
-    # kaynağı işlenmiş olarak işaretle (sadece kuyruk modunda)
     if not SOURCE_URL.strip() and target not in state["processed_sources"]:
         state["processed_sources"].append(target)
     save_state(state)
