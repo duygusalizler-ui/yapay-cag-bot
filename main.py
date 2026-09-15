@@ -3,7 +3,7 @@ import sys
 import time
 import requests
 
-def main():
+def run_bot():
     youtube_url = sys.argv[1] if len(sys.argv) > 1 else os.getenv("YOUTUBE_URL")
     ssemble_api_key = os.getenv("SSEMBLE_API_KEY")
     template_id = os.getenv("SSEMBLE_TEMPLATE_ID")
@@ -12,11 +12,11 @@ def main():
 
     if not youtube_url:
         print("Hata: YouTube URL bulunamadı!")
-        sys.exit(1)
+        return False
 
     if not ssemble_api_key:
         print("Hata: SSEMBLE_API_KEY GitHub Secrets'ta tanımlı değil!")
-        sys.exit(1)
+        return False
 
     print(f"🚀 Ssemble API viral tarama başlatılıyor. Hedef URL: {youtube_url}")
 
@@ -38,10 +38,9 @@ def main():
         payload["templateId"] = template_id.strip()
 
     response = None
-    max_api_retries = 3
-    for attempt in range(1, max_api_retries + 1):
+    for attempt in range(1, 4):
         try:
-            print(f"🔄 Ssemble API'ye bağlanılıyor (Deneme {attempt}/{max_api_retries})...")
+            print(f"🔄 Ssemble API'ye bağlanılıyor (Deneme {attempt}/3)...")
             response = requests.post(create_url, json=payload, headers=headers, timeout=45)
             if response.status_code in [200, 201]:
                 break
@@ -52,8 +51,8 @@ def main():
         time.sleep(5)
 
     if not response or response.status_code not in [200, 201]:
-        print(f"❌ Ssemble API 3 denemede de yanıt vermedi! İşlem durduruluyor.")
-        sys.exit(1)
+        print("❌ Ssemble API yanıt vermedi, bu tur atlanıyor.")
+        return False
 
     res_data = response.json()
     data_field = res_data.get("data", {}) if isinstance(res_data.get("data"), dict) else {}
@@ -67,16 +66,15 @@ def main():
     )
     
     if not request_id:
-        print(f"Hata: Ssemble'dan geçerli bir Request ID dönmedi! Gelen Yanıt: {res_data}")
-        sys.exit(1)
+        print(f"Hata: Request ID dönmedi! Gelen Yanıt: {res_data}")
+        return False
 
-    print(f"✅ İşlem sıraya alındı. Request ID: {request_id}. Yapay zeka en viral anları işliyor...")
+    print(f"✅ İşlem sıraya alındı. Request ID: {request_id}. Yapay zeka işliyor...")
 
     status_url = f"https://aiclipping.ssemble.com/api/v1/shorts/{request_id}/status"
-    max_retries = 80
     completed = False
     
-    for attempt in range(1, max_retries + 1):
+    for attempt in range(1, 81): # 20 dakika max bekleme
         time.sleep(15)
         try:
             status_res = requests.get(status_url, headers={"X-API-Key": ssemble_api_key}, timeout=20)
@@ -84,39 +82,34 @@ def main():
                 status_data = status_res.json()
                 status_content = status_data.get("data", {}) if isinstance(status_data.get("data"), dict) else {}
                 status = status_data.get("status") or status_content.get("status")
-                print(f"[{attempt}/{max_retries}] Bulut işlem durumu: {status}")
+                print(f"[{attempt}/80] İşlem durumu: {status}")
                 
                 if status == "completed":
                     completed = True
                     break
                 elif status == "failed":
-                    print("❌ Ssemble bulut sunucusunda video işleme başarısız oldu!")
-                    sys.exit(1)
-            else:
-                print(f"Uyarı: Durum kodu {status_res.status_code}, tekrar deneniyor...")
+                    print("❌ Ssemble tarafında işlem başarısız oldu!")
+                    return False
         except Exception as e:
-            print(f"Durum sorgulama sırasında geçici ağ hatası: {e}")
+            print(f"Durum sorgulama hatası (es geçiliyor): {e}")
 
     if not completed:
-        print("❌ Zaman Aşımı: Ssemble 20 dakika içinde videoyu tamamlayamadı.")
-        sys.exit(1)
+        print("❌ Zaman aşımı: İşlem tamamlanamadı.")
+        return False
 
-    print("🎯 Video başarıyla tamamlandı, 80+ viral skorlu elit klipler seçiliyor...")
+    print("🎯 İşlem tamamlandı, klipler alınıyor...")
     result_url = f"https://aiclipping.ssemble.com/api/v1/shorts/{request_id}"
     
     try:
         result_res = requests.get(result_url, headers={"X-API-Key": ssemble_api_key}, timeout=30)
+        if result_res.status_code != 200:
+            return False
+        result_data = result_res.json()
     except Exception as e:
         print(f"Sonuçlar alınırken hata: {e}")
-        sys.exit(1)
-        
-    if result_res.status_code != 200:
-        print(f"Sonuç verisi çekilemedi. Kod: {result_res.status_code}")
-        sys.exit(1)
+        return False
 
-    result_data = result_res.json()
     res_clips_container = result_data.get("clips") or result_data.get("data", {}).get("clips") or result_data.get("data")
-    
     if isinstance(res_clips_container, dict):
         clips = res_clips_container.get("clips", [res_clips_container])
     elif isinstance(res_clips_container, list):
@@ -125,81 +118,83 @@ def main():
         clips = [result_data]
 
     if not clips:
-        print(f"Hata: Üretilen klip bilgisine ulaşılamadı. Gelen veri: {result_data}")
-        sys.exit(1)
+        print("Hata: Klip listesi boş.")
+        return False
 
-    # SADECE 80 ve üzeri skorlu olanları filtrele ve büyükten küçüğe sırala
-    filtered_clips = [
-        c for c in clips 
-        if float(c.get("viralScore") or c.get("score") or 0) >= 80
-    ]
-    
-    top_clips = sorted(filtered_clips, key=lambda c: float(c.get("viralScore") or c.get("score") or 0), reverse=True)
+    # En yüksek skorlu klipleri sırala
+    sorted_clips = sorted(clips, key=lambda c: float(c.get("viralityScore") or c.get("viralScore") or c.get("score") or 0), reverse=True)
 
-    if not top_clips:
-        print("⚠️ Bu videoda 80+ skorlu klip bulunamadı, en yüksek skorlu en iyi klip seçiliyor...")
-        best_fallback = max(clips, key=lambda c: float(c.get("viralScore") or c.get("score") or 0))
-        top_clips = [best_fallback]
-    else:
-        print(f"🔥 Toplam {len(clips)} klip arasından 80+ kriterine uyan {len(top_clips)} adet elit klip seçildi stok için gönderiliyor.")
-
-    for index, clip in enumerate(top_clips, start=1):
+    success_sent = False
+    for index, clip in enumerate(sorted_clips[:5], start=1):
         video_download_url = clip.get("videoUrl") or clip.get("url") or clip.get("downloadUrl")
-        title = clip.get("title") or f"Yapay Zeka Trendleri #{index}"
+        title = clip.get("title") or "Yapay Zeka Trendleri"
         description = clip.get("description") or "Yapay zeka dünyasından öne çıkan çarpıcı anlar."
         hashtags = clip.get("hashtags") or "#YapayZeka #Teknoloji #Gelecek #Reels"
-        score = clip.get("viralScore") or clip.get("score") or "N/A"
+        score = clip.get("viralityScore") or clip.get("viralScore") or clip.get("score") or "80+"
 
         if not video_download_url:
-            print(f"Uyarı: {index}. klip için indirme linki bulunamadı, atlanıyor.")
             continue
 
-        print(f"📥 [{index}/{len(top_clips)}] Nolu 80+ elit klip indiriliyor (Skor: {score})...")
+        print(f"📥 {index}. klip indiriliyor...")
         output_filename = f"final_reel_{index}.mp4"
         
-        vid_res = requests.get(video_download_url, stream=True, timeout=120)
-        with open(output_filename, "wb") as f:
-            for chunk in vid_res.iter_content(chunk_size=8192):
-                if chunk:
-                    f.write(chunk)
+        try:
+            vid_res = requests.get(video_download_url, stream=True, timeout=120)
+            with open(output_filename, "wb") as f:
+                for chunk in vid_res.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
 
-        file_size = os.path.getsize(output_filename)
-        if file_size < 5000:
-            print(f"❌ Uyarı: {index}. klip dosyası çok küçük, atlanıyor.")
-            continue
+            # MP4 Bütünlük Kontrolü
+            with open(output_filename, "rb") as f:
+                header = f.read(100)
+                if b'ftyp' not in header and b'moov' not in header and b'mdat' not in header:
+                    print(f"⚠️ Bu klip dosyası bozuk, sonrakine geçiliyor...")
+                    if os.path.exists(output_filename):
+                        os.remove(output_filename)
+                    continue
 
-        if telegram_token and telegram_chat_id:
-            print(f"📤 [{index}/{len(top_clips)}] Nolu klip Telegram kanalına gönderiliyor...")
-            tg_url = f"https://api.telegram.org/bot{telegram_token}/sendVideo"
+            # Telegram'a Gönder
+            if telegram_token and telegram_chat_id:
+                print(f"📤 {index}. klip Telegram'a gönderiliyor...")
+                tg_url = f"https://api.telegram.org/bot{telegram_token}/sendVideo"
+                full_message = (
+                    f"🚀 **Yapay Çağ - Elit Stok**\n\n"
+                    f"🔥 **Viral Skor:** {score}/100\n"
+                    f"📌 **Başlık:** {title}\n\n"
+                    f"📝 {description}\n\n"
+                    f"🏷 {hashtags}"
+                )
+                
+                with open(output_filename, 'rb') as video_file:
+                    tg_res = requests.post(tg_url, data={'chat_id': telegram_chat_id, 'caption': full_message, 'parse_mode': 'Markdown'}, files={'video': video_file}, timeout=120)
+                    if tg_res.status_code == 200:
+                        print("✨ Klip başarıyla iletildi!")
+                        success_sent = True
+
+            if os.path.exists(output_filename):
+                os.remove(output_filename)
             
-            full_message = (
-                f"🚀 **Yapay Çağ - Elit Stok Seri (#{index})**\n\n"
-                f"🔥 **Viral Skor:** {score}/100\n"
-                f"📌 **Başlık:** {title}\n\n"
-                f"📝 {description}\n\n"
-                f"🏷 {hashtags}\n\n"
-                f"🔗 **Kaynak:** {youtube_url}"
-            )
-            
-            with open(output_filename, 'rb') as video_file:
-                files = {'video': video_file}
-                payload = {
-                    'chat_id': telegram_chat_id,
-                    'caption': full_message,
-                    'parse_mode': 'Markdown'
-                }
-                tg_res = requests.post(tg_url, data=payload, files=files, timeout=120)
-                if tg_res.status_code == 200:
-                    print(f"✨ [{index}/{len(top_clips)}] Nolu klip kusursuz iletildi.")
-                else:
-                    print(f"Telegram gönderim hatası: {tg_res.text}")
+            if success_sent:
+                break # En az 1 sağlam video gönderdiysek yeterli
 
-        if os.path.exists(output_filename):
-            os.remove(output_filename)
-        
-        time.sleep(3)
+        except Exception as e:
+            print(f"İndirme/gönderim hatası: {e}")
+            if os.path.exists(output_filename):
+                os.remove(output_filename)
 
-    print("🎯 80+ elit stok klipler başarıyla işlendi ve gönderildi!")
+    return success_sent
 
 if __name__ == "__main__":
-    main()
+    # Üst üste 3 kez komple baştan deneme mekanizması (Hata alsa bile seni bekletmez, tekrar dener)
+    for global_attempt in range(1, 4):
+        print(f"\n🔄 Otomasyon Döngüsü Başlatılıyor (Global Deneme {global_attempt}/3)...")
+        if run_bot():
+            print("✨ İşlem kusursuz tamamlandı!")
+            sys.exit(0)
+        else:
+            print(f"⚠️ Bu turda aksaklık oldu, 10 saniye sonra tekrar deneniyor...")
+            time.sleep(10)
+    
+    print("❌ 3 global denemede de sonuç alınamadı.")
+    sys.exit(1)
