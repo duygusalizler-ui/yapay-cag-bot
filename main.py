@@ -74,7 +74,7 @@ def run_bot():
     status_url = f"https://aiclipping.ssemble.com/api/v1/shorts/{request_id}/status"
     completed = False
     
-    for attempt in range(1, 81): # 20 dakika max bekleme
+    for attempt in range(1, 81):
         time.sleep(15)
         try:
             status_res = requests.get(status_url, headers={"X-API-Key": ssemble_api_key}, timeout=20)
@@ -91,7 +91,7 @@ def run_bot():
                     print("❌ Ssemble tarafında işlem başarısız oldu!")
                     return False
         except Exception as e:
-            print(f"Durum sorgulama hatası (es geçiliyor): {e}")
+            print(f"Durum sorgulama hatası: {e}")
 
     if not completed:
         print("❌ Zaman aşımı: İşlem tamamlanamadı.")
@@ -103,6 +103,7 @@ def run_bot():
     try:
         result_res = requests.get(result_url, headers={"X-API-Key": ssemble_api_key}, timeout=30)
         if result_res.status_code != 200:
+            print(f"Sonuç alınamadı kod: {result_res.status_code}")
             return False
         result_data = result_res.json()
     except Exception as e:
@@ -118,10 +119,9 @@ def run_bot():
         clips = [result_data]
 
     if not clips:
-        print("Hata: Klip listesi boş.")
+        print(f"Hata: Klip listesi boş. Gelen veri: {result_data}")
         return False
 
-    # En yüksek skorlu klipleri sırala
     sorted_clips = sorted(clips, key=lambda c: float(c.get("viralityScore") or c.get("viralScore") or c.get("score") or 0), reverse=True)
 
     success_sent = False
@@ -133,9 +133,10 @@ def run_bot():
         score = clip.get("viralityScore") or clip.get("viralScore") or clip.get("score") or "80+"
 
         if not video_download_url:
+            print(f"⚠️ {index}. klip için indirme URL'si bulunamadı.")
             continue
 
-        print(f"📥 {index}. klip indiriliyor...")
+        print(f"📥 {index}. klip indiriliyor... URL: {video_download_url}")
         output_filename = f"final_reel_{index}.mp4"
         
         try:
@@ -145,11 +146,12 @@ def run_bot():
                     if chunk:
                         f.write(chunk)
 
-            # MP4 Bütünlük Kontrolü
+            # Dosya bütünlük kontrolü ve detaylı hata dökümü
             with open(output_filename, "rb") as f:
-                header = f.read(100)
-                if b'ftyp' not in header and b'moov' not in header and b'mdat' not in header:
-                    print(f"⚠️ Bu klip dosyası bozuk, sonrakine geçiliyor...")
+                header = f.read(200)
+                if b'ftyp' not in header and b'moov' not in header and b'mdat' not in header and b'webm' not in header:
+                    text_preview = header.decode('utf-8', errors='ignore')
+                    print(f"❌ HATA: İndirilen dosya geçerli bir video değil! Ssemble'ın döndürdüğü içerik: {text_preview}")
                     if os.path.exists(output_filename):
                         os.remove(output_filename)
                     continue
@@ -171,22 +173,23 @@ def run_bot():
                     if tg_res.status_code == 200:
                         print("✨ Klip başarıyla iletildi!")
                         success_sent = True
+                    else:
+                        print(f"Telegram hata: {tg_res.text}")
 
             if os.path.exists(output_filename):
                 os.remove(output_filename)
             
             if success_sent:
-                break # En az 1 sağlam video gönderdiysek yeterli
+                break
 
         except Exception as e:
-            print(f"İndirme/gönderim hatası: {e}")
+            print(f"İndirme/gönderim istisnası: {e}")
             if os.path.exists(output_filename):
                 os.remove(output_filename)
 
     return success_sent
 
 if __name__ == "__main__":
-    # Üst üste 3 kez komple baştan deneme mekanizması (Hata alsa bile seni bekletmez, tekrar dener)
     for global_attempt in range(1, 4):
         print(f"\n🔄 Otomasyon Döngüsü Başlatılıyor (Global Deneme {global_attempt}/3)...")
         if run_bot():
