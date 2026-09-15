@@ -1,4 +1,4 @@
-name: AI Auto Reel Clipper
+name: Ssemble Auto Reel Bot
 
 on:
   workflow_dispatch:
@@ -6,10 +6,10 @@ on:
       youtube_url:
         description: 'YouTube Video URL'
         required: true
-        default: 'https://www.youtube.com/watch?v=...'
+        type: string
 
 jobs:
-  ai-clip-and-send:
+  run-ssemble-bot:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -20,21 +20,16 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Install FFmpeg
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg
-
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install requests
 
-      - name: Run AI Clipper Bot
+      - name: Run Ssemble Automation Script
         env:
           YOUTUBE_URL: ${{ github.event.inputs.youtube_url }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          SSEMBLE_API_KEY: ${{ secrets.SSEMBLE_API_KEY }}
+          SSEMBLE_TEMPLATE_ID: ${{ secrets.SSEMBLE_TEMPLATE_ID }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          python main.py
+          python main.py "$YOUTUBE_URL"
