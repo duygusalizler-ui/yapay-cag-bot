@@ -18,15 +18,19 @@ def main():
         print("Hata: SSEMBLE_API_KEY GitHub Secrets'ta tanımlı değil!")
         sys.exit(1)
 
-    print(f"🚀 Ssemble API isteği başlatılıyor. Hedef URL: {youtube_url}")
+    print(f"🚀 Ssemble API viral tarama başlatılıyor. Hedef URL: {youtube_url}")
 
     create_url = "https://aiclipping.ssemble.com/api/v1/shorts/create"
     headers = {
         "X-API-Key": ssemble_api_key,
         "Content-Type": "application/json"
     }
+    
+    # Tüm videodaki en can alıcı yerleri taramak için geniş pencere (1 saat = 3600 sn)
     payload = {
         "url": youtube_url,
+        "start": 0,
+        "end": 3600,
         "preferredLength": "under60sec",
         "language": "tr"
     }
@@ -41,7 +45,7 @@ def main():
         sys.exit(1)
 
     if response.status_code not in [200, 201]:
-        print(f"Ssemble API Reddeti! Kod: {response.status_code} - Yanıt: {response.text}")
+        print(f"Ssemble API Reddetti! Kod: {response.status_code} - Yanıt: {response.text}")
         sys.exit(1)
 
     res_data = response.json()
@@ -51,7 +55,7 @@ def main():
         print(f"Hata: Ssemble'dan geçerli bir Request ID dönmedi! Gelen Yanıt: {res_data}")
         sys.exit(1)
 
-    print(f"✅ İşlem sıraya alındı. Request ID: {request_id}. Bulutta işlenmesi bekleniyor...")
+    print(f"✅ İşlem sıraya alındı. Request ID: {request_id}. Yapay zeka en viral anları arıyor...")
 
     status_url = f"https://aiclipping.ssemble.com/api/v1/shorts/{request_id}/status"
     max_retries = 40
@@ -81,7 +85,7 @@ def main():
         print("❌ Zaman Aşımı: Ssemble 10 dakika içinde videoyu tamamlayamadı.")
         sys.exit(1)
 
-    print("🎯 Video başarıyla tamamlandı, detaylar ve indirme bağlantısı alınıyor...")
+    print("🎯 Video başarıyla tamamlandı, en yüksek viral skorlu klip seçiliyor...")
     result_url = f"https://aiclipping.ssemble.com/api/v1/shorts/{request_id}"
     
     try:
@@ -104,17 +108,19 @@ def main():
         print(f"Hata: Üretilen klip bilgisine ulaşılamadı. Gelen veri: {result_data}")
         sys.exit(1)
 
-    first_clip = clips[0]
-    video_download_url = first_clip.get("videoUrl") or first_clip.get("url") or first_clip.get("downloadUrl")
-    title = first_clip.get("title") or "Yapay Zeka ve Gelecek Trendleri"
-    description = first_clip.get("description") or "Yapay zeka iş dünyasını ve meslekleri kökten dönüştürmeye devam ediyor."
-    hashtags = first_clip.get("hashtags") or "#YapayZeka #Teknoloji #Gelecek #Reels"
+    # En yüksek viral skora (viralScore / score) sahip klibi otomatik bulup seçme
+    best_clip = max(clips, key=lambda c: c.get("viralScore") or c.get("score") or 0)
+
+    video_download_url = best_clip.get("videoUrl") or best_clip.get("url") or best_clip.get("downloadUrl")
+    title = best_clip.get("title") or "Yapay Zeka ve Gelecek Trendleri"
+    description = best_clip.get("description") or "Yapay zeka iş dünyasını ve meslekleri kökten dönüştürmeye devam ediyor."
+    hashtags = best_clip.get("hashtags") or "#YapayZeka #Teknoloji #Gelecek #Reels"
 
     if not video_download_url:
-        print(f"Hata: Video indirme linki bulunamadı! Klip verisi: {first_clip}")
+        print(f"Hata: Video indirme linki bulunamadı! Klip verisi: {best_clip}")
         sys.exit(1)
 
-    print(f"📥 Markalanmış video indiriliyor...")
+    print(f"📥 En viral klip indiriliyor...")
     vid_res = requests.get(video_download_url, timeout=60)
     output_filename = "final_reel.mp4"
     with open(output_filename, "wb") as f:
@@ -141,7 +147,7 @@ def main():
             }
             tg_res = requests.post(tg_url, data=payload, files=files, timeout=60)
             if tg_res.status_code == 200:
-                print("✨ Harika! Video ve açıklamalarıyla birlikte Telegram'a başarıyla iletildi.")
+                print("✨ Harika! En viral klip ve açıklamalarıyla birlikte Telegram'a başarıyla iletildi.")
             else:
                 print(f"Telegram gönderim hatası: {tg_res.text}")
 
