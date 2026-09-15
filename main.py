@@ -122,18 +122,20 @@ def run_bot():
         print(f"Hata: Klip listesi boş. Gelen veri: {result_data}")
         return False
 
-    sorted_clips = sorted(clips, key=lambda c: float(c.get("viralityScore") or c.get("viralScore") or c.get("score") or 0), reverse=True)
+    # Resmi Ssemble alanı olan 'viral_score' üzerinden büyükten küçüğe sıralama
+    sorted_clips = sorted(clips, key=lambda c: float(c.get("viral_score") or c.get("viralityScore") or c.get("score") or 0), reverse=True)
 
     success_sent = False
     for index, clip in enumerate(sorted_clips[:5], start=1):
-        video_download_url = clip.get("videoUrl") or clip.get("url") or clip.get("downloadUrl")
+        # RESMİ SSEMBLE API ALANI: video_url
+        video_download_url = clip.get("video_url") or clip.get("videoUrl") or clip.get("url")
         title = clip.get("title") or "Yapay Zeka Trendleri"
         description = clip.get("description") or "Yapay zeka dünyasından öne çıkan çarpıcı anlar."
         hashtags = clip.get("hashtags") or "#YapayZeka #Teknoloji #Gelecek #Reels"
-        score = clip.get("viralityScore") or clip.get("viralScore") or clip.get("score") or "80+"
+        score = clip.get("viral_score") or clip.get("viralityScore") or clip.get("score") or "80+"
 
-        if not video_download_url:
-            print(f"⚠️ {index}. klip için indirme URL'si bulunamadı.")
+        if not video_download_url or "youtube.com" in video_download_url or "youtu.be" in video_download_url:
+            print(f"⚠️ {index}. klip için geçerli render edilmiş video URL'si bulunamadı (Atlanıyor).")
             continue
 
         print(f"📥 {index}. klip indiriliyor... URL: {video_download_url}")
@@ -146,12 +148,12 @@ def run_bot():
                     if chunk:
                         f.write(chunk)
 
-            # Dosya bütünlük kontrolü ve detaylı hata dökümü
+            # Dosya bütünlük kontrolü (MP4 / WebM imzası)
             with open(output_filename, "rb") as f:
                 header = f.read(200)
                 if b'ftyp' not in header and b'moov' not in header and b'mdat' not in header and b'webm' not in header:
                     text_preview = header.decode('utf-8', errors='ignore')
-                    print(f"❌ HATA: İndirilen dosya geçerli bir video değil! Ssemble'ın döndürdüğü içerik: {text_preview}")
+                    print(f"❌ HATA: İndirilen dosya geçerli bir video değil! İçerik: {text_preview}")
                     if os.path.exists(output_filename):
                         os.remove(output_filename)
                     continue
