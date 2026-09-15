@@ -37,7 +37,6 @@ def main():
     if template_id and template_id.strip():
         payload["templateId"] = template_id.strip()
 
-    # Ssemble Create isteği için 3 kez otomatik tekrar deneme (Retry) mekanizması
     response = None
     max_api_retries = 3
     for attempt in range(1, max_api_retries + 1):
@@ -74,7 +73,7 @@ def main():
     print(f"✅ İşlem sıraya alındı. Request ID: {request_id}. Yapay zeka en viral anları işliyor...")
 
     status_url = f"https://aiclipping.ssemble.com/api/v1/shorts/{request_id}/status"
-    max_retries = 80  # 80 deneme * 15 saniye = 20 dakika boyunca güvenle bekler
+    max_retries = 80
     completed = False
     
     for attempt in range(1, max_retries + 1):
@@ -102,7 +101,7 @@ def main():
         print("❌ Zaman Aşımı: Ssemble 20 dakika içinde videoyu tamamlayamadı.")
         sys.exit(1)
 
-    print("🎯 Video başarıyla tamamlandı, en yüksek viral skorlu klip seçiliyor...")
+    print("🎯 Video başarıyla tamamlandı, 80+ viral skorlu elit klipler seçiliyor...")
     result_url = f"https://aiclipping.ssemble.com/api/v1/shorts/{request_id}"
     
     try:
@@ -129,50 +128,78 @@ def main():
         print(f"Hata: Üretilen klip bilgisine ulaşılamadı. Gelen veri: {result_data}")
         sys.exit(1)
 
-    best_clip = max(clips, key=lambda c: c.get("viralScore") or c.get("score") or 0) if len(clips) > 0 else clips[0]
+    # SADECE 80 ve üzeri skorlu olanları filtrele ve büyükten küçüğe sırala
+    filtered_clips = [
+        c for c in clips 
+        if float(c.get("viralScore") or c.get("score") or 0) >= 80
+    ]
+    
+    top_clips = sorted(filtered_clips, key=lambda c: float(c.get("viralScore") or c.get("score") or 0), reverse=True)
 
-    video_download_url = best_clip.get("videoUrl") or best_clip.get("url") or best_clip.get("downloadUrl")
-    title = best_clip.get("title") or "Yapay Zeka ve Gelecek Trendleri"
-    description = best_clip.get("description") or "Yapay zeka iş dünyasını ve meslekleri kökten dönüştürmeye devam ediyor."
-    hashtags = best_clip.get("hashtags") or "#YapayZeka #Teknoloji #Gelecek #Reels"
+    if not top_clips:
+        print("⚠️ Bu videoda 80+ skorlu klip bulunamadı, en yüksek skorlu en iyi klip seçiliyor...")
+        best_fallback = max(clips, key=lambda c: float(c.get("viralScore") or c.get("score") or 0))
+        top_clips = [best_fallback]
+    else:
+        print(f"🔥 Toplam {len(clips)} klip arasından 80+ kriterine uyan {len(top_clips)} adet elit klip seçildi stok için gönderiliyor.")
 
-    if not video_download_url:
-        print(f"Hata: Video indirme linki bulunamadı! Klip verisi: {best_clip}")
-        sys.exit(1)
+    for index, clip in enumerate(top_clips, start=1):
+        video_download_url = clip.get("videoUrl") or clip.get("url") or clip.get("downloadUrl")
+        title = clip.get("title") or f"Yapay Zeka Trendleri #{index}"
+        description = clip.get("description") or "Yapay zeka dünyasından öne çıkan çarpıcı anlar."
+        hashtags = clip.get("hashtags") or "#YapayZeka #Teknoloji #Gelecek #Reels"
+        score = clip.get("viralScore") or clip.get("score") or "N/A"
 
-    print(f"📥 En viral klip indiriliyor...")
-    vid_res = requests.get(video_download_url, timeout=60)
-    output_filename = "final_reel.mp4"
-    with open(output_filename, "wb") as f:
-        f.write(vid_res.content)
+        if not video_download_url:
+            print(f"Uyarı: {index}. klip için indirme linki bulunamadı, atlanıyor.")
+            continue
 
-    if telegram_token and telegram_chat_id:
-        print("📤 Telegram kanalına gönderiliyor...")
-        tg_url = f"https://api.telegram.org/bot{telegram_token}/sendVideo"
+        print(f"📥 [{index}/{len(top_clips)}] Nolu 80+ elit klip indiriliyor (Skor: {score})...")
+        output_filename = f"final_reel_{index}.mp4"
         
-        full_message = (
-            f"🚀 **Yapay Çağ - Otomatik Viral Stüdyo**\n\n"
-            f"📌 **Başlık:** {title}\n\n"
-            f"📝 {description}\n\n"
-            f"🏷 {hashtags}\n\n"
-            f"🔗 **Kaynak:** {youtube_url}"
-        )
-        
-        with open(output_filename, 'rb') as video_file:
-            files = {'video': video_file}
-            payload = {
-                'chat_id': telegram_chat_id,
-                'caption': full_message,
-                'parse_mode': 'Markdown'
-            }
-            tg_res = requests.post(tg_url, data=payload, files=files, timeout=60)
-            if tg_res.status_code == 200:
-                print("✨ Harika! En viral klip ve açıklamalarıyla birlikte Telegram'a başarıyla iletildi.")
-            else:
-                print(f"Telegram gönderim hatası: {tg_res.text}")
+        vid_res = requests.get(video_download_url, stream=True, timeout=120)
+        with open(output_filename, "wb") as f:
+            for chunk in vid_res.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
 
-    if os.path.exists(output_filename):
-        os.remove(output_filename)
+        file_size = os.path.getsize(output_filename)
+        if file_size < 5000:
+            print(f"❌ Uyarı: {index}. klip dosyası çok küçük, atlanıyor.")
+            continue
+
+        if telegram_token and telegram_chat_id:
+            print(f"📤 [{index}/{len(top_clips)}] Nolu klip Telegram kanalına gönderiliyor...")
+            tg_url = f"https://api.telegram.org/bot{telegram_token}/sendVideo"
+            
+            full_message = (
+                f"🚀 **Yapay Çağ - Elit Stok Seri (#{index})**\n\n"
+                f"🔥 **Viral Skor:** {score}/100\n"
+                f"📌 **Başlık:** {title}\n\n"
+                f"📝 {description}\n\n"
+                f"🏷 {hashtags}\n\n"
+                f"🔗 **Kaynak:** {youtube_url}"
+            )
+            
+            with open(output_filename, 'rb') as video_file:
+                files = {'video': video_file}
+                payload = {
+                    'chat_id': telegram_chat_id,
+                    'caption': full_message,
+                    'parse_mode': 'Markdown'
+                }
+                tg_res = requests.post(tg_url, data=payload, files=files, timeout=120)
+                if tg_res.status_code == 200:
+                    print(f"✨ [{index}/{len(top_clips)}] Nolu klip kusursuz iletildi.")
+                else:
+                    print(f"Telegram gönderim hatası: {tg_res.text}")
+
+        if os.path.exists(output_filename):
+            os.remove(output_filename)
+        
+        time.sleep(3)
+
+    print("🎯 80+ elit stok klipler başarıyla işlendi ve gönderildi!")
 
 if __name__ == "__main__":
     main()
