@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""Yapay Çağ - Otomatik Viral Medya Sistemi (v3.1 - iyileştirilmiş)"""
+"""Yapay Çağ - Otomatik Viral Medya Sistemi (v3.2 - güvenli env + normalize kaynak takibi)"""
 import os
 import sys
 import json
 import time
 import tempfile
 import logging
-import shutil
 from urllib.parse import urlparse, parse_qs
 from pathlib import Path
 
@@ -14,52 +13,52 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-# ---------- ORTAM DEĞİŞKENLERİ ----------
-SSEMBLE_BASE_URL = os.getenv("SSEMBLE_BASE_URL") or "https://aiclipping.ssemble.com/api/v1"
-SSEMBLE_API_KEY = os.environ.get("SSEMBLE_API_KEY", "")
-SSEMBLE_TEMPLATE_ID = os.getenv("SSEMBLE_TEMPLATE_ID", "")
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
-SOURCE_URL = os.getenv("SOURCE_URL", "")
-SOURCES_FILE = os.getenv("SOURCES_FILE", "sources.txt")
-STATE_FILE = os.getenv("STATE_FILE", "sent_state.json")
-SHOPIER_CTA = os.getenv("SHOPIER_CTA", "")
-CLIP_START_SEC = int(os.getenv("CLIP_START_SEC", "0"))
-CLIP_END_SEC = int(os.getenv("CLIP_END_SEC", "600"))
-PREFERRED_LENGTH = os.getenv("PREFERRED_LENGTH", "under60sec")
-CLIP_LANGUAGE = os.getenv("CLIP_LANGUAGE", "tr")
-
-# 🎯 DÜZELTME: 80 yerine 65 (daha gerçekçi, daha fazla klip bulur)
-VIRAL_MIN_SCORE = float(os.getenv("VIRAL_MIN_SCORE", "65"))
-VIRAL_TOP_N = int(os.getenv("VIRAL_TOP_N", "3"))
-POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "20"))
-POLL_TIMEOUT = int(os.getenv("POLL_TIMEOUT", "1800"))
-
-TG_MAX_UPLOAD = 50 * 1024 * 1024  # 50 MB Telegram limiti
-
-# ---------- LOG ----------
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s",
-    datefmt="%H:%M:%S"
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 log = logging.getLogger("yapay-cag")
 
-# ---------- HTTP SESSION (retry'lı) ----------
-def build_session(timeout=60):
-    """Retry'lı ve zaman aşımı olan bir requests session oluşturur."""
-    session = requests.Session()
-    retry = Retry(
-        total=3,
-        backoff_factor=1,
-        status_forcelist=[429, 500, 502, 503, 504],
-        allowed_methods=["HEAD", "GET", "POST"]
-    )
-    adapter = HTTPAdapter(max_retries=retry)
-    session.mount("http://", adapter)
-    session.mount("https://", adapter)
-    session.timeout = timeout
-    return session
+# ---------- GÜVENLİ ENV OKUMA (boş secret = varsayılan, çökme yok) ----------
+def _env_str(name, default=""):
+    return (os.getenv(name) or default).strip()
+
+def _env_int(name, default):
+    v = _env_str(name)
+    if not v:
+        return default
+    try:
+        return int(v)
+    except ValueError:
+        log.warning("⚠️ Geçersiz %s='%s' → varsayılan: %s", name, v, default)
+        return default
+
+def _env_float(name, default):
+    v = _env_str(name)
+    if not v:
+        return default
+    try:
+        return float(v)
+    except ValueError:
+        log.warning("⚠️ Geçersiz %s='%s' → varsayılan: %s", name, v, default)
+        return default
+
+# ---------- ORTAM DEĞİŞKENLERİ ----------
+SSEMBLE_BASE_URL = _env_str("SSEMBLE_BASE_URL", "https://aiclipping.ssemble.com/api/v1")
+SSEMBLE_API_KEY = _env_str("SSEMBLE_API_KEY")
+SSEMBLE_TEMPLATE_ID = _env_str("SSEMBLE_TEMPLATE_ID")
+TELEGRAM_TOKEN = _env_str("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = _env_str("TELEGRAM_CHAT_ID")
+SOURCE_URL = _env_str("SOURCE_URL")
+SOURCES_FILE = _env_str("SOURCES_FILE", "sources.txt")
+STATE_FILE = _env_str("STATE_FILE", "sent_state.json")
+SHOPIER_CTA = _env_str("SHOPIER_CTA")
+CLIP_START_SEC = _env_int("CLIP_START_SEC", 0)
+CLIP_END_SEC = _env_int("CLIP_END_SEC", 600)
+PREFERRED_LENGTH = _env_str("PREFERRED_LENGTH", "under60sec")
+CLIP_LANGUAGE = _env_str("CLIP_LANGUAGE", "tr")
+VIRAL_MIN_SCORE = _env_float("VIRAL_MIN_SCORE", 65)   # 🎯 80 değil 65
+VIRAL_TOP_N = _env_int("VIRAL_TOP_N", 3)
+POLL_INTERVAL = _env_int("POLL_INTERVAL", 20)
+POLL_TIMEOUT = _env_int("POLL_TIMEOUT", 1800)
+TG_MAX_UPLOAD = 50 * 1024 * 1024
 
 # ---------- STATE YÖNETİMİ ----------
 def load_state():
@@ -73,20 +72,16 @@ def load_state():
     return data
 
 def save_state(state):
-    """Atomik yazma: önce geçici dosyaya, sonra rename. Bozulma riski yok."""
+    """Atomik yazma: önce .tmp, sonra rename → dosya bozulma riski sıfır."""
     tmp_path = STATE_FILE + ".tmp"
     with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
-    # Windows'ta rename önce hedefin var olmadığından emin ol
-    if os.path.exists(STATE_FILE):
-        os.replace(tmp_path, STATE_FILE)
-    else:
-        os.rename(tmp_path, STATE_FILE)
+    os.replace(tmp_path, STATE_FILE)
 
 # ---------- KAYNAK OKUMA ----------
 def read_sources():
-    if SOURCE_URL.strip():
-        return [SOURCE_URL.strip()]
+    if SOURCE_URL:
+        return [SOURCE_URL]
     try:
         with open(SOURCES_FILE, "r", encoding="utf-8") as f:
             lines = [ln.strip() for ln in f]
@@ -94,16 +89,9 @@ def read_sources():
         return []
     return [ln for ln in lines if ln and not ln.startswith("#")]
 
-def pick_target(sources, state):
-    if SOURCE_URL.strip():
-        return SOURCE_URL.strip()
-    for s in sources:
-        if s not in state["processed_sources"]:
-            return s
-    return None
-
 # ---------- URL NORMALİZASYON ----------
 def normalize_youtube(url):
+    """youtu.be / watch?v= / ?si= hepsini tek forma çevirir (tekrar engelini sağlamlaştırır)."""
     try:
         p = urlparse(url)
         if "youtu.be" in p.netloc:
@@ -116,8 +104,32 @@ def normalize_youtube(url):
         pass
     return url
 
+def pick_target(sources, state):
+    if SOURCE_URL:
+        return SOURCE_URL
+    processed = {normalize_youtube(s) for s in state["processed_sources"]}
+    for s in sources:
+        if normalize_youtube(s) not in processed:
+            return s
+    return None
+
 def _unwrap(js):
     return js.get("data", js) if isinstance(js, dict) else js
+
+# ---------- HTTP SESSION (retry'lı) ----------
+def build_session(timeout=60):
+    session = requests.Session()
+    retry = Retry(
+        total=3,
+        backoff_factor=1,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["HEAD", "GET", "POST"]
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    session.timeout = timeout
+    return session
 
 # ---------- SSEMBLE CLIENT ----------
 class SsembleClient:
@@ -129,7 +141,7 @@ class SsembleClient:
         self.session.headers.update({
             "X-API-Key": api_key,
             "Content-Type": "application/json",
-            "User-Agent": "YapayCagBot/3.1"
+            "User-Agent": "YapayCagBot/3.2"
         })
 
     def create_short(self, source_url, template_id=None):
@@ -190,7 +202,6 @@ def clip_url(c):
     return None
 
 def clip_score(c):
-    """Klibin viral skorunu alır. Yoksa 0 döner."""
     for k in ("viralScore", "score", "virality", "viralityScore"):
         if c.get(k) is not None:
             try:
@@ -200,41 +211,29 @@ def clip_score(c):
     return 0.0
 
 def select_top_clips(clips, min_score, top_n):
-    """
-    İki aşamalı seçim:
-    1) Önce min_score üzerindeki klipleri al
-    2) Eğer hiç yoksa, en yüksek skorlu top_n klibi al (FALLBACK)
-    """
+    """İki aşamalı: 1) eşik üstü klipler 2) yoksa FALLBACK (en yüksek skorlular)."""
     for c in clips:
         c["_score"] = clip_score(c)
 
-    # Skorları log'a yaz (debug)
     log.info("📊 %d klip skorları:", len(clips))
     for i, c in enumerate(clips, 1):
         title = (c.get("title") or "Başlıksız")[:40]
         log.info("   #%d: skor=%.1f | %s", i, c["_score"], title)
 
-    # Aşama 1: Yüksek skorlu olanlar
     passed = [c for c in clips if c["_score"] >= min_score]
-
     if passed:
-        log.info("✅ %d klip %s+ skor eşiğini geçti.", len(passed), min_score)
+        log.info("✅ %d klip %s+ eşiğini geçti.", len(passed), min_score)
         passed.sort(key=lambda x: x["_score"], reverse=True)
         return passed[:top_n]
 
-    # Aşama 2: FALLBACK - en yüksek skorlu top_n
     if clips:
-        log.warning(
-            "⚠️ %s+ skorlu klip bulunamadı. En yüksek skorlu %d klip seçiliyor (fallback).",
-            min_score, top_n
-        )
+        log.warning("⚠️ %s+ klip yok. En yüksek skorlu %d klip seçiliyor (fallback).", min_score, top_n)
         clips.sort(key=lambda x: x["_score"], reverse=True)
         return clips[:top_n]
 
     return []
 
 def download_and_verify(url):
-    """Klibi indirir ve MP4/WebM bütünlüğünü doğrular."""
     session = build_session(timeout=180)
     r = session.get(url, stream=True)
     r.raise_for_status()
@@ -255,7 +254,6 @@ def download_and_verify(url):
             os.unlink(tmp.name)
             raise ValueError("İndirilen dosya boş (0 byte).")
 
-        # Dosya başlığını kontrol et (sihirli sayılar)
         with open(tmp.name, "rb") as f:
             head = f.read(16)
 
@@ -267,7 +265,6 @@ def download_and_verify(url):
 
         log.info("✅ Doğrulandı: %s (%.1f MB)", tmp.name, size / 1e6)
         return tmp.name, size
-
     except Exception:
         if os.path.exists(tmp.name):
             os.unlink(tmp.name)
@@ -278,12 +275,9 @@ def _tg(method):
     return f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/{method}"
 
 def tg_send_message(text):
-    """Telegram'a mesaj gönderir. Uzun metni otomatik keser."""
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         log.warning("Telegram tanımlı değil, mesaj atlanıyor.")
         return
-
-    # Telegram 4096 karakter limiti
     text = text[:4090]
     try:
         r = requests.post(
@@ -312,7 +306,6 @@ def build_caption(title, desc, score):
 
 # ---------- ANA FONKSİYON ----------
 def main():
-    # Zorunlu ortam değişkenlerini kontrol et
     for name, val in [
         ("SSEMBLE_API_KEY", SSEMBLE_API_KEY),
         ("TELEGRAM_TOKEN", TELEGRAM_TOKEN),
@@ -322,17 +315,16 @@ def main():
             log.error("❌ Eksik ortam değişkeni: %s", name)
             sys.exit(1)
 
-    log.info("🚀 Yapay Çağ başlıyor...")
+    log.info("🚀 Yapay Çağ başlıyor... (eşik=%s, topN=%s, clip=%s-%ss)",
+             VIRAL_MIN_SCORE, VIRAL_TOP_N, CLIP_START_SEC, CLIP_END_SEC)
+
     state = load_state()
     sources = read_sources()
     target = pick_target(sources, state)
 
     if not target:
-        msg = (
-            "ℹ️ İşlenecek yeni kaynak yok (kuyruk boş)."
-            if sources
-            else "⚠️ Kaynak bulunamadı: SOURCE_URL veya sources.txt tanımla."
-        )
+        msg = ("ℹ️ İşlenecek yeni kaynak yok (kuyruk boş)." if sources
+               else "⚠️ Kaynak bulunamadı: SOURCE_URL veya sources.txt tanımla.")
         tg_send_message(msg)
         log.warning(msg)
         return
@@ -352,10 +344,7 @@ def main():
 
     top = select_top_clips(clips, VIRAL_MIN_SCORE, VIRAL_TOP_N)
     if not top:
-        tg_send_message(
-            f"⚠️ Hiç klip seçilemedi ({len(clips)} klip vardı, hepsi bozuk olabilir).\n"
-            f"Kaynak: {target}"
-        )
+        tg_send_message(f"⚠️ Hiç klip seçilemedi ({len(clips)} klip vardı).\nKaynak: {target}")
         return
 
     sent = 0
@@ -398,11 +387,9 @@ def main():
                 sent_set.add(cid)
             state["sent_clips"] = sorted(sent_set)
             save_state(state)
-
         except Exception as e:
             log.error("❌ #%d Telegram hatası (%s): %s", i, title, e)
             tg_send_message(f"⚠️ Klip #{i} gönderilemedi: {title}\nHata: {e}\nURL: {url}")
-
         finally:
             if path_obj.exists():
                 try:
@@ -410,9 +397,10 @@ def main():
                 except Exception:
                     pass
 
-    # processed_sources'a ekle
-    if not SOURCE_URL.strip() and target not in state["processed_sources"]:
-        state["processed_sources"].append(target)
+    if not SOURCE_URL:
+        norm = normalize_youtube(target)
+        if norm not in {normalize_youtube(s) for s in state["processed_sources"]}:
+            state["processed_sources"].append(norm)
     save_state(state)
 
     summary = (
