@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Yapay Çağ - Otomatik Viral Medya Sistemi (v3.2 - fallback: sabah boş uyanma)"""
+"""Yapay Çağ - Otomatik Viral Medya Sistemi (v3.3 - görünür hata + auth'lu indirme)"""
 import os
 import sys
 import json
@@ -10,14 +10,12 @@ from urllib.parse import urlparse, parse_qs
 import requests
 
 def _env_int(name, default):
-    """Boş/bozuk env değeri gelirse çökme yerine varsayılanı kullan."""
     try:
         return int(str(os.getenv(name, "")).strip() or default)
     except ValueError:
         return default
 
 def _env_float(name, default):
-    """Boş/bozuk env değeri gelirse çökme yerine varsayılanı kullan."""
     try:
         return float(str(os.getenv(name, "")).strip() or default)
     except ValueError:
@@ -143,10 +141,19 @@ class SsembleClient:
 def clip_id(c):
     return str(c.get("id") or c.get("clipId") or c.get("url") or c.get("videoUrl") or "")
 
+_URL_KEYS = ("url", "videoUrl", "downloadUrl", "videoUrlWithCaptions", "outputUrl",
+             "mp4Url", "fileUrl", "cdnUrl", "streamUrl", "link", "href")
+
 def clip_url(c):
-    for k in ("url", "videoUrl", "downloadUrl", "videoUrlWithCaptions", "outputUrl"):
+    """URL alanını önce üst seviyede, sonra bir seviye iç içe sözlüklerde ara."""
+    for k in _URL_KEYS:
         if c.get(k):
             return c[k]
+    for v in c.values():
+        if isinstance(v, dict):
+            for k in _URL_KEYS:
+                if v.get(k):
+                    return v[k]
     return None
 
 def clip_score(c):
@@ -163,35 +170,48 @@ def select_top_clips(clips, min_score, top_n):
         c["_score"] = clip_score(c)
     passed = [c for c in clips if c["_score"] >= min_score]
     if not passed and clips:
-        # Eşiği geçen klip yoksa: sabah planı boş kalmasın diye
-        # en yüksek skorlu TEK klip "yedek" olarak seçilir.
         fallback = max(clips, key=lambda x: x["_score"])
         fallback["_fallback"] = True
         passed = [fallback]
     passed.sort(key=lambda x: x["_score"], reverse=True)
     return passed[:top_n]
 
-def download_and_verify(url):
-    r = requests.get(url, stream=True, timeout=120)
+def _download_once(url, headers):
+    r = requests.get(url, stream=True, timeout=120, headers=headers)
     r.raise_for_status()
     suffix = ".webm" if "webm" in r.headers.get("Content-Type", "").lower() else ".mp4"
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
     size = 0
-    for chunk in r.iter_content(chunk_size=1 << 16):
-        if chunk:
-            tmp.write(chunk)
-            size += len(chunk)
-    tmp.close()
-    if size == 0:
-        os.unlink(tmp.name)
-        raise ValueError("İndirilen dosya boş.")
-    with open(tmp.name, "rb") as f:
-        head = f.read(16)
-    if not (b"ftyp" in head or head.startswith(b"\x1a\x45\xdf\xa3")):
-        os.unlink(tmp.name)
-        raise ValueError("Dosya bütünlüğü doğrulanamadı (MP4/WebM değil).")
-    log.info("Doğrulandı: %s (%.1f MB)", tmp.name, size / 1e6)
-    return tmp.name, size
+    try:
+        for chunk in r.iter_content(chunk_size=1 << 16):
+            if chunk:
+                tmp.write(chunk)
+                size += len(chunk)
+        tmp.close()
+        if size == 0:
+            raise ValueError("İndirilen dosya boş.")
+        with open(tmp.name, "rb") as f:
+            head = f.read(16)
+        if not (b"ftyp" in head or head.startswith(b"\x1a\x45\xdf\xa3")):
+            raise ValueError("Dosya bütünlüğü doğrulanamadı (MP4/WebM değil).")
+        log.info("Doğrulandı: %s (%.1f MB)", tmp.name, size / 1e6)
+        return tmp.name, size
+    except Exception:
+        tmp.close()
+        if os.path.exists(tmp.name):
+            os.unlink(tmp.name)
+        raise
+
+def download_and_verify(url):
+    """Önce anonim dene; yetki hatasında API anahtarı başlığıyla yeniden dene."""
+    last_err = None
+    for headers in (None, {"X-API-Key": SSEMBLE_API_KEY}):
+        try:
+            return _download_once(url, headers)
+        except Exception as e:
+            last_err = e
+            log.warning("İndirme denemesi başarısız (auth=%s): %s", headers is not None, e)
+    raise last_err if last_err else ValueError("İndirme başarısız.")
 
 def _tg(method):
     return f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/{method}"
@@ -243,14 +263,20 @@ def main():
         tg_send_message(f"⚠️ {VIRAL_MIN_SCORE:.0f}+ skorlu klip çıkmadı ({len(clips)} klip vardı); "
                         f"en yüksek skorlu klip YEDEK olarak sabah planına eklendi. Kaynak: {target}")
     sent = 0
+    skipped = 0
     sent_set = set(state["sent_clips"])
     for c in top:
         cid = clip_id(c)
         if cid and cid in sent_set:
             log.info("Zaten gönderilmiş, atlanıyor: %s", cid)
+            skipped += 1
             continue
         url = clip_url(c)
         if not url:
+            reason = f"Klip URL'si Ssemble yanıtında bulunamadı (alanlar: {', '.join(sorted(c.keys()))})"
+            log.error(reason)
+            tg_send_message(f"⚠️ {reason}")
+            skipped += 1
             continue
         title = c.get("title", "Başlıksız")
         desc = c.get("description", "")
@@ -258,6 +284,8 @@ def main():
             path, size = download_and_verify(url)
         except Exception as e:
             log.error("Klip atlandı (%s): %s", title, e)
+            tg_send_message(f"⚠️ Klip indirilemedi ({title}): {e}")
+            skipped += 1
             continue
         caption = build_caption(title, desc, c["_score"])
         if c.get("_fallback"):
@@ -278,8 +306,8 @@ def main():
     if not SOURCE_URL.strip() and target not in state["processed_sources"]:
         state["processed_sources"].append(target)
     save_state(state)
-    tg_send_message(f"✅ Otomasyon tamam. {sent} klip gönderildi. Kaynak işlendi.\n(requestId: {request_id})")
-    log.info("Bitti. Gönderilen: %d", sent)
+    tg_send_message(f"✅ Otomasyon tamam. {sent} klip gönderildi, {skipped} atlandı. Kaynak işlendi.\n(requestId: {request_id})")
+    log.info("Bitti. Gönderilen: %d, Atlanan: %d", sent, skipped)
 
 if __name__ == "__main__":
     try:
