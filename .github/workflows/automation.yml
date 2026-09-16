@@ -43,8 +43,8 @@ jobs:
           TELEGRAM_CHAT_ID:    ${{ secrets.TELEGRAM_CHAT_ID }}
           SOURCE_URL:          ${{ secrets.SOURCE_URL }}
           SHOPIER_CTA:         ${{ secrets.SHOPIER_CTA }}
-          VIRAL_MIN_SCORE:     "80"
-          CLIP_END_SEC:        "600"
+          VIRAL_MIN_SCORE:     "65"
+          CLIP_END_SEC:        "1200"
           VIRAL_TOP_N:         "3"
 
       - name: Durum dosyasını repoya kaydet
