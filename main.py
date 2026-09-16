@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Yapay Çağ - Otomatik Viral Medya Sistemi (v3.1 - hardened env parsing)"""
+"""Yapay Çağ - Otomatik Viral Medya Sistemi (v3.2 - fallback: sabah boş uyanma)"""
 import os
 import sys
 import json
@@ -162,6 +162,12 @@ def select_top_clips(clips, min_score, top_n):
     for c in clips:
         c["_score"] = clip_score(c)
     passed = [c for c in clips if c["_score"] >= min_score]
+    if not passed and clips:
+        # Eşiği geçen klip yoksa: sabah planı boş kalmasın diye
+        # en yüksek skorlu TEK klip "yedek" olarak seçilir.
+        fallback = max(clips, key=lambda x: x["_score"])
+        fallback["_fallback"] = True
+        passed = [fallback]
     passed.sort(key=lambda x: x["_score"], reverse=True)
     return passed[:top_n]
 
@@ -230,8 +236,12 @@ def main():
     clips = client.get_shorts(request_id)
     log.info("%d klip bulundu.", len(clips))
     top = select_top_clips(clips, VIRAL_MIN_SCORE, VIRAL_TOP_N)
+    strict = [c for c in top if not c.get("_fallback")]
     if not top:
-        tg_send_message(f"⚠️ {VIRAL_MIN_SCORE:.0f}+ skorlu klip çıkmadı ({len(clips)} klip vardı). Kaynak: {target}")
+        tg_send_message(f"⚠️ Kaynaktan hiç klip çıkmadı. Kaynak: {target}")
+    elif not strict:
+        tg_send_message(f"⚠️ {VIRAL_MIN_SCORE:.0f}+ skorlu klip çıkmadı ({len(clips)} klip vardı); "
+                        f"en yüksek skorlu klip YEDEK olarak sabah planına eklendi. Kaynak: {target}")
     sent = 0
     sent_set = set(state["sent_clips"])
     for c in top:
@@ -250,6 +260,8 @@ def main():
             log.error("Klip atlandı (%s): %s", title, e)
             continue
         caption = build_caption(title, desc, c["_score"])
+        if c.get("_fallback"):
+            caption = f"⚠️ Yedek klip (skor {VIRAL_MIN_SCORE:.0f} eşiğinin altında).\n{caption}"
         try:
             if size > TG_MAX_UPLOAD:
                 tg_send_message(f"{caption}\n\n▶️ {url}")
